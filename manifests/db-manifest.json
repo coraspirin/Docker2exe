@@ -1,0 +1,75 @@
+{
+  "_comment": "series_granularity: 'major' → image tag'inin major'ı (postgres:16.4 → '16'); 'minor' → major.minor serisi (mysql:8.4.2 → '8.4'). aliases: sadece major içeren tag'lerin (mysql:8) Docker Hub'daki güncel seri karşılığı. sha256 değerleri: MongoDB/MariaDB resmi checksum, Redis GitHub release digest, Postgres/MySQL resmi CDN'den indirilip hesaplandı (2026-09-24). tested=true: test/e2e/db-matrix.js ile kurulum, başlatma, sağlık, kimlik bilgisi ve graceful kapatma uçtan uca doğrulandı (17/17, 2026-09-25).",
+  "postgres": {
+    "series_granularity": "major",
+    "default_port": 5432,
+    "supported_majors": ["14", "15", "16", "17", "18"],
+    "eol_majors": ["9", "10", "11", "12", "13"],
+    "experimental_majors": [],
+    "aliases": {},
+    "layout": { "include": ["bin", "lib", "share", "server_license.txt"], "exclude": ["*.pdb", "*.lib", "stackbuilder.exe"] },
+    "versions": {
+      "14": { "version": "14.24", "url": "https://get.enterprisedb.com/postgresql/postgresql-14.24-1-windows-x64-binaries.zip", "sha256": "7d49a448d8bda9bb56febd44f57b9cebfe8e9728428334bd25475cbc860ed969", "tested": true },
+      "15": { "version": "15.19", "url": "https://get.enterprisedb.com/postgresql/postgresql-15.19-1-windows-x64-binaries.zip", "sha256": "cc54e2d349f48c7743ad0c509b755ea565ff04bb5c5e71745d114074cab0c453", "tested": true },
+      "16": { "version": "16.15", "url": "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64-binaries.zip", "sha256": "25e6fcdfb8caec38691bf461125e7564508760666f7b8e5dc6a5f0818f58f81e", "tested": true },
+      "17": { "version": "17.11", "url": "https://get.enterprisedb.com/postgresql/postgresql-17.11-1-windows-x64-binaries.zip", "sha256": "6eabdf00d2893713b75db4336a23c3fdf505f056e217ec6e2e95d901750cfea3", "tested": true },
+      "18": { "version": "18.6", "url": "https://get.enterprisedb.com/postgresql/postgresql-18.6-1-windows-x64-binaries.zip", "sha256": "fbe23da234ee31547bf8a36d29dfd81e82b849df2d2b78d2eecb43d360252f8c", "tested": true }
+    }
+  },
+  "redis": {
+    "series_granularity": "major",
+    "default_port": 6379,
+    "supported_majors": ["6", "7", "8"],
+    "eol_majors": ["2", "3", "4", "5"],
+    "experimental_majors": [],
+    "aliases": {},
+    "layout": { "include": [], "exclude": ["*.pdb"] },
+    "versions": {
+      "6": { "version": "6.2.24", "engine": "redis-windows-msys2", "url": "https://github.com/redis-windows/redis-windows/releases/download/6.2.24/Redis-6.2.24-Windows-x64-msys2.zip", "sha256": "6eb3345be4bccc37660d72b88db56464a0526098e2a249e649ecee160a15d1d2", "tested": true },
+      "7": { "version": "7.4.11", "engine": "redis-windows-msys2", "url": "https://github.com/redis-windows/redis-windows/releases/download/7.4.11/Redis-7.4.11-Windows-x64-msys2.zip", "sha256": "ec629971d76756dd040204297f1a92f43848e7a5f4862d39426beeafcca2a2a9", "tested": true },
+      "8": { "version": "8.2.10", "engine": "redis-windows-msys2", "url": "https://github.com/redis-windows/redis-windows/releases/download/8.2.10/Redis-8.2.10-Windows-x64-msys2.zip", "sha256": "281f180eaba420f43eb18d655197d55bf804eb692bc55209264bfb284da3850f", "tested": true }
+    }
+  },
+  "mongo": {
+    "series_granularity": "minor",
+    "default_port": 27017,
+    "supported_majors": ["7.0", "8.0"],
+    "eol_majors": ["3.6", "4.0", "4.2", "4.4", "5.0", "6.0"],
+    "experimental_majors": ["8.2"],
+    "aliases": { "7": "7.0", "8": "8.0" },
+    "layout": { "include": ["bin", "LICENSE-Community.txt"], "exclude": ["*.pdb", "mongos.exe"] },
+    "versions": {
+      "7.0": { "version": "7.0.43", "url": "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-7.0.43.zip", "sha256": "09b7893dc07fbb6d67d4c2690f6d1fa5b3039a0b3b5de34fb1d9096d55a2230f", "tested": true },
+      "8.0": { "version": "8.0.32", "url": "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-8.0.32.zip", "sha256": "5a0675fdec49b544cd5d374ad50a9a594cf5b3278b5ace658aa51cbb4df17177", "tested": true },
+      "8.2": { "version": "8.2.12", "url": "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-8.2.12.zip", "sha256": "a45fca0ea0ff5dd8ab00bc10b103df33177cb519839e05f36dfe841a84cd21cd", "tested": true }
+    }
+  },
+  "mysql": {
+    "series_granularity": "minor",
+    "default_port": 3306,
+    "supported_majors": ["8.4", "9.7"],
+    "eol_majors": ["5.5", "5.6", "5.7", "8.0"],
+    "experimental_majors": [],
+    "aliases": { "8": "8.4", "9": "9.7" },
+    "layout": { "include": ["bin", "lib", "share", "LICENSE"], "exclude": ["*.pdb", "*.lib", "*/debug/*", "*/mecab/*", "*-debug.dll"] },
+    "versions": {
+      "8.4": { "version": "8.4.11", "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.11-winx64.zip", "sha256": "a492371d687d2bab088b0062581144a0044b8964baefdf4faa579292b423d25c", "tested": true },
+      "9.7": { "version": "9.7.2", "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.2-winx64.zip", "sha256": "5592ea38e53edd67f5baa68303e7fcf2f0a40fc08978fdb4a7b0c38d12baea17", "tested": true }
+    }
+  },
+  "mariadb": {
+    "series_granularity": "minor",
+    "default_port": 3306,
+    "supported_majors": ["10.11", "11.4", "11.8", "12.3"],
+    "eol_majors": ["10.3", "10.4", "10.5", "10.6"],
+    "experimental_majors": [],
+    "aliases": { "10": "10.11", "11": "11.8", "12": "12.3" },
+    "layout": { "include": ["bin", "lib", "share", "COPYING"], "exclude": ["*.pdb", "*.lib", "mariabackup.exe", "mariadb-backup.exe"] },
+    "versions": {
+      "10.11": { "version": "10.11.19", "url": "https://archive.mariadb.org/mariadb-10.11.19/winx64-packages/mariadb-10.11.19-winx64.zip", "sha256": "398ea30e5036010bbebe01d2b1804280424dcc2626e36d8e95155c04d25a0490", "tested": true },
+      "11.4": { "version": "11.4.13", "url": "https://archive.mariadb.org/mariadb-11.4.13/winx64-packages/mariadb-11.4.13-winx64.zip", "sha256": "d62986d433eeebfde218560b276103831604a61e929e87f1a17f5aebd80257e2", "tested": true },
+      "11.8": { "version": "11.8.9", "url": "https://archive.mariadb.org/mariadb-11.8.9/winx64-packages/mariadb-11.8.9-winx64.zip", "sha256": "830c46727d9278eae212ae3eca44eeb9e71b2a68704e95f344a64fba7b1963f5", "tested": true },
+      "12.3": { "version": "12.3.3", "url": "https://archive.mariadb.org/mariadb-12.3.3/winx64-packages/mariadb-12.3.3-winx64.zip", "sha256": "4b5706b47148b47c8f36963c8352d1ddee37a1287b4690428f631a74b09b85a0", "tested": true }
+    }
+  }
+}

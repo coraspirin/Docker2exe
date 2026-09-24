@@ -1,0 +1,23 @@
+services:
+  api:
+    build:
+      context: ./server
+    ports:
+      - "4000:4000"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_USER=stok
+      - DB_PASSWORD=stok-sifre
+      - DB_NAME=stok
+    depends_on:
+      - db
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: kok-sifre
+      MARIADB_DATABASE: stok
+      MARIADB_USER: stok
+      MARIADB_PASSWORD: stok-sifre
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d

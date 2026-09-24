@@ -1,0 +1,47 @@
+x-db-env: &db-env
+  POSTGRES_USER: ${POSTGRES_USER:-app}
+  POSTGRES_DB: defter
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    env_file: ./app.env
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@db:5432/defter?sslmode=disable
+      - REDIS_HOST=cache
+      - REDIS_URL=redis://cache:6379/0
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - PUBLIC_URL=https://example.com
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      <<: *db-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  cache:
+    image: redis:7.2.4-bookworm
+    ports:
+      - target: 6379
+        published: 6379
+
+  adminer:
+    image: mongo-express:latest
+    ports:
+      - "8081:8081"
+
+volumes:
+  pgdata:

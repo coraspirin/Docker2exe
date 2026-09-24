@@ -1,0 +1,2 @@
+{ "name": "stok-takip", "version": "0.3.0", "private": true, "main": "index.js",
+  "dependencies": { "express": "^4.21.2", "mysql2": "^3.11.0" } }

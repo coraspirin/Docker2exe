@@ -1,0 +1,1 @@
+{ "name": "defter-client", "private": true, "scripts": { "build": "node build.js" } }

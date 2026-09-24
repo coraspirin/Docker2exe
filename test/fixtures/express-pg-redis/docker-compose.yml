@@ -1,0 +1,31 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:3000"
+    environment:
+      DATABASE_URL: postgres://${DB_USER:-defter}:${DB_PASSWORD}@db:5432/defter
+      REDIS_URL: redis://:${REDIS_PASSWORD}@cache:6379
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-defter}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: defter
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+
+  cache:
+    image: redis:7.2-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+
+volumes:
+  pgdata:
