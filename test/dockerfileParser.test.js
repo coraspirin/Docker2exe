@@ -60,3 +60,27 @@ test('ENTRYPOINT tanımlanınca önceki CMD sıfırlanır', () => {
 test('splitShellWords tırnakları işler', () => {
   assert.deepEqual(splitShellWords(`node -r 'dotenv/config' "my app.js" a\\ b`), ['node', '-r', 'dotenv/config', 'my app.js', 'a b']);
 });
+
+test('COPY/ADD, VOLUME ve sistem paketleri (son stage)', () => {
+  const df = parseDockerfileContent(`
+FROM node:26-alpine AS client-build
+WORKDIR /app/client
+COPY client/package*.json ./
+RUN apk add --no-cache git
+
+FROM node:26-alpine
+WORKDIR /app/server
+RUN apk add --no-cache poppler-utils font-liberation && echo ok
+COPY server/package*.json ./
+COPY ["server/", "./"]
+COPY --from=client-build /app/client/dist /app/client/dist
+VOLUME ["/data"]
+`);
+  assert.deepEqual(df.final.copies, [
+    { from: null, sources: ['server/package*.json'], dest: '/app/server', destIsDir: true },
+    { from: null, sources: ['server'], dest: '/app/server', destIsDir: true },
+    { from: 'client-build', sources: ['/app/client/dist'], dest: '/app/client/dist', destIsDir: false }
+  ]);
+  assert.deepEqual(df.final.volumes, ['/data']);
+  assert.deepEqual(df.final.systemPackages, ['poppler-utils', 'font-liberation']);
+});

@@ -116,7 +116,7 @@ function isInside(root, target) {
  *
  * @returns {{ output: string, placedAt: string|null, external: boolean, warnings: string[] }}
  */
-async function buildSpa(frontend, appDir, sourceFiles, logFile, projectDir = appDir) {
+async function buildSpa(frontend, appDir, sourceFiles, logFile, projectDir = appDir, extraTargets = []) {
   const warnings = [];
   await installAndBuild(frontend.dir, logFile);
   const output = findSpaOutput(frontend.dir);
@@ -128,8 +128,10 @@ async function buildSpa(frontend, appDir, sourceFiles, logFile, projectDir = app
     throw new Error(`Frontend çıktısı (${output}) proje klasörünün dışında; paketlenemez`);
   }
 
+  // extraTargets: Dockerfile'da build stage çıktısının kopyalandığı konumlar (COPY --from=... /app/client/dist).
+  // Sadece "çıktı zaten doğru yerde" kontrolünde kullanılır; backend derleme çıktısı da olabileceği için oraya kopyalanmaz.
   const targets = findStaticTargets(appDir, sourceFiles);
-  const serving = targets.find(t => isInside(t.dir, output) || isInside(output, t.dir));
+  const serving = [...targets, ...extraTargets].find(t => isInside(t.dir, output) || isInside(output, t.dir));
   if (serving) return { output, placedAt: output, external, warnings };
 
   const candidates = targets.filter(t => isInside(projectDir, t.dir));

@@ -6,8 +6,9 @@ const fs = require('fs');
  *
  * Döner: {
  *   stages: [{ name, baseImage, rootImage }],
- *   final: { baseImage, rootImage, workdir, cmd, entrypoint, expose: number[], env: {} }
+ *   final: { baseImage, rootImage, workdir, cmd, entrypoint, expose: number[], env: {}, copies: [], volumes: string[] }
  * }
+ * copies: son stage'deki COPY/ADD'ler (bkz. parseCopy); volumes: VOLUME ile bildirilen mutlak yollar
  * cmd/entrypoint: { form: 'exec'|'shell', args: string[], raw?: string } | null
  */
 function parseDockerfile(filePath) {
@@ -41,7 +42,10 @@ function parseDockerfileContent(content) {
         cmd: parent ? parent.cmd : null,
         entrypoint: parent ? parent.entrypoint : null,
         expose: parent ? [...parent.expose] : [],
-        env: parent ? { ...parent.env } : {}
+        env: parent ? { ...parent.env } : {},
+        copies: [],
+        volumes: parent ? [...parent.volumes] : [],
+        systemPackages: parent ? [...parent.systemPackages] : []
       };
       stages.push(current);
       continue;
@@ -67,6 +71,21 @@ function parseDockerfileContent(content) {
           if (Number.isInteger(port)) current.expose.push(port);
         }
         break;
+      case 'COPY':
+      case 'ADD': {
+        const copy = parseCopy(substitute(value, vars), current.workdir);
+        if (copy) current.copies.push(copy);
+        break;
+      }
+      case 'RUN':
+        // RUN çalıştırılmaz; sadece işletim sistemi paket kurulumları (apk/apt/yum/dnf) raporlama için toplanır
+        for (const p of systemPackagesIn(substitute(value, vars))) {
+          if (!current.systemPackages.includes(p)) current.systemPackages.push(p);
+        }
+        break;
+      case 'VOLUME':
+        current.volumes.push(...parseList(substitute(value, vars)).map(v => (v.startsWith('/') ? joinPosix('/', v) : joinPosix(current.workdir, v))));
+        break;
       case 'CMD':
         current.cmd = parseCommand(value);
         break;
@@ -90,9 +109,76 @@ function parseDockerfileContent(content) {
       cmd: final.cmd,
       entrypoint: final.entrypoint,
       expose: final.expose,
-      env: final.env
+      env: final.env,
+      copies: final.copies,
+      volumes: final.volumes,
+      systemPackages: final.systemPackages
     }
   };
+}
+
+const PACKAGE_INSTALL_RE = /\b(?:apk\s+add|apt-get\s+install|apt\s+install|yum\s+install|dnf\s+install|microdnf\s+install)\b([^;&|]*)/g;
+
+/** `apk add --no-cache poppler-utils font-liberation && ...` → ['poppler-utils', 'font-liberation'] */
+function systemPackagesIn(command) {
+  const out = [];
+  let m;
+  PACKAGE_INSTALL_RE.lastIndex = 0;
+  while ((m = PACKAGE_INSTALL_RE.exec(command))) {
+    for (const word of splitShellWords(m[1])) {
+      if (word.startsWith('-') || word.includes('$')) continue;
+      out.push(word.replace(/[=<>].*$/, ''));
+    }
+  }
+  return out.filter(Boolean);
+}
+
+/**
+ * `COPY [--chown=..] [--from=x] <src>... <dest>` (JSON form dahil). dest WORKDIR'a göre mutlak yola çevrilir.
+ * Döner: { from: string|null, sources: string[] (context'e göreli, posix), dest: string, destIsDir: boolean }
+ */
+function parseCopy(value, workdir) {
+  let words;
+  if (value.trim().startsWith('[')) {
+    try {
+      words = JSON.parse(value);
+    } catch {
+      words = splitShellWords(value);
+    }
+  } else {
+    words = splitShellWords(value);
+  }
+  let from = null;
+  const rest = [];
+  for (const w of words) {
+    if (w.startsWith('--')) {
+      const m = /^--from=(.+)$/.exec(w);
+      if (m) from = m[1];
+    } else {
+      rest.push(w);
+    }
+  }
+  if (rest.length < 2) return null;
+  const rawDest = rest[rest.length - 1];
+  return {
+    from,
+    sources: rest.slice(0, -1).map(s => s.replace(/^\.\//, '').replace(/\/+$/, '') || '.'),
+    dest: rawDest.startsWith('/') ? joinPosix('/', rawDest) : joinPosix(workdir, rawDest),
+    destIsDir: rawDest.endsWith('/') || rawDest === '.' || rest.length > 2
+  };
+}
+
+/** `VOLUME ["/a", "/b"]` veya `VOLUME /a /b` */
+function parseList(value) {
+  if (value.trim().startsWith('[')) {
+    try {
+      const arr = JSON.parse(value);
+      if (Array.isArray(arr)) return arr.map(String);
+    } catch {
+      // shell form olarak devam
+    }
+  }
+  return splitShellWords(value);
 }
 
 /** Satır devamı (`\`), yorumlar ve boş satırları işleyip `{keyword, value}` listesi üretir. */

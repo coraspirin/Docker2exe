@@ -15,6 +15,7 @@ const { buildNodeApp } = require('./builder/nodeBuilder');
 const { generateLauncher } = require('./builder/launcherGen');
 const { PKG_NODE_TARGETS } = require('./builder/pkgCompiler');
 const { writePackage, zipDirectory, createDesktopShortcut, sanitizeAppName, toAppId } = require('./packager/portablePackager');
+const { createAppExe } = require('./packager/sfx');
 const { cacheDir } = require('./utils/paths');
 const report = require('./utils/report');
 const pkg = require('../package.json');
@@ -37,6 +38,14 @@ function parseNodeTarget(value) {
   return n;
 }
 
+function readPackageName(dir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8').replace(/^﻿/, '')).name || null;
+  } catch {
+    return null;
+  }
+}
+
 function dirSize(dir) {
   let total = 0;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -55,6 +64,95 @@ function prepareOutputDir(outDir) {
   }
 }
 
+/** Konumsal kaynak argümanı: GitHub URL'i veya yerel klasör. */
+function applySourceArgument(source, opts) {
+  if (!source) return opts;
+  if (opts.path || opts.github) throw new Error('Kaynak hem konumsal argüman hem --path/--github ile verilemez');
+  const cleaned = source.trim().replace(/^"+|"+$/g, ''); // `"C:\Proje Klasörü\"` → sondaki kaçmış tırnak
+  return /^(https?:\/\/|git@)/i.test(cleaned) ? { ...opts, github: cleaned } : { ...opts, path: cleaned };
+}
+
+/** docker2exe.exe Explorer'dan argümansız açıldığında proje klasörünü sorar (sürükle-bırak da olur). */
+async function promptSource() {
+  const readline = require('readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log(chalk.bold(`docker2exe ${pkg.version}`) + ' — Docker Compose projesini Windows exe paketine dönüştürür\n');
+    const answer = await rl.question('Proje klasörünü buraya sürükleyin (veya yolunu / GitHub URL\'ini yazın) ve Enter\'a basın:\n> ');
+    return answer.trim() || null;
+  } finally {
+    rl.close();
+  }
+}
+
+const FORMAT_ALIASES = {
+  exe: ['exe'],
+  '1': ['exe'],
+  klasor: ['folder'],
+  'klasör': ['folder'],
+  folder: ['folder'],
+  '2': ['folder'],
+  zip: ['zip'],
+  '3': ['zip'],
+  hepsi: ['exe', 'folder', 'zip'],
+  all: ['exe', 'folder', 'zip'],
+  '4': ['exe', 'folder', 'zip']
+};
+
+/** "exe,zip" / "1,3" / "hepsi" → { exe, folder, zip }. */
+function parseFormats(value) {
+  const tokens = String(value).toLowerCase().split(/[\s,;+]+/).filter(Boolean);
+  if (!tokens.length) throw new Error('Çıktı türü boş');
+  const formats = { exe: false, folder: false, zip: false };
+  for (const t of tokens) {
+    const kinds = FORMAT_ALIASES[t];
+    if (!kinds) throw new Error(`Bilinmeyen çıktı türü: "${t}" (geçerli: exe, klasor, zip, hepsi)`);
+    kinds.forEach(k => { formats[k] = true; });
+  }
+  return formats;
+}
+
+/** Build başlamadan önce hangi çıktıların üretileceğini sorar (Enter → sadece exe). */
+async function promptFormats() {
+  const readline = require('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const lines = rl[Symbol.asyncIterator](); // satırları kuyruklar: soru yazılmadan gelen giriş kaybolmaz
+  try {
+    console.log(chalk.bold('\nÇıktı türü'));
+    console.log(`  1) Tek exe  ${chalk.gray('— hedef makineye tek dosya kopyalanır, çift tıklayınca çalışır (önerilen)')}`);
+    console.log(`  2) Klasör   ${chalk.gray('— Başlat.bat / Durdur.bat ile taşınabilir klasör')}`);
+    console.log(`  3) Zip      ${chalk.gray('— klasörün zip\'i')}`);
+    console.log(`  4) Hepsi`);
+    for (;;) {
+      process.stdout.write('Seçiminiz (birden fazlası için virgülle, örn. 1,3) [1]: ');
+      const { value, done } = await lines.next();
+      if (done) return parseFormats('1'); // giriş kapandı → varsayılan
+      const answer = value.trim();
+      try {
+        return parseFormats(answer || '1');
+      } catch (err) {
+        console.log(chalk.yellow(`  ${err.message}`));
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Çıktı türleri: --format verildiyse o; --no-zip/--no-exe verildiyse kalanlar; hiçbiri yoksa etkileşimli
+ * terminalde build öncesinde sorulur, değilse (CI, yönlendirilmiş çıktı) hepsi üretilir.
+ */
+function resolveFormats(opts) {
+  if (opts.format) {
+    if (opts.zip === false || opts.exe === false) throw new Error('--format ile --no-zip/--no-exe birlikte kullanılamaz');
+    return { formats: parseFormats(opts.format), ask: false };
+  }
+  const explicit = opts.zip === false || opts.exe === false;
+  const ask = !explicit && !opts.json && !opts.check && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  return { formats: { exe: opts.exe !== false, folder: true, zip: opts.zip !== false }, ask };
+}
+
 async function buildCommand(opts) {
   // Ağ/disk işlemlerinden önce tüm bayrakları doğrula.
   if (!!opts.path === !!opts.github) {
@@ -71,6 +169,7 @@ async function buildCommand(opts) {
     throw new Error(`--redis-engine şunlardan biri olmalı: ${REDIS_ENGINES.join(', ')}`);
   }
   const externalEngines = opts.redisEngine === 'memurai' ? { redis: 'memurai' } : {};
+  let { formats, ask: askFormats } = resolveFormats(opts);
   const manifest = loadManifest();
   const interactive = !opts.json && process.stderr.isTTY;
 
@@ -106,6 +205,7 @@ async function buildCommand(opts) {
         );
       }
       if (stack.node && nodeTarget) {
+        if (stack.node.source === 'varsayılan') stack.warnings = stack.warnings.filter(w => !w.startsWith('Node versiyonu tespit edilemedi'));
         stack.node = { ...stack.node, major: nodeTarget, source: 'cli (--node-target)' };
       } else if (stack.node && !PKG_NODE_TARGETS.includes(stack.node.major)) {
         stack.errors.push(`Node ${stack.node.major} (${stack.node.source}) için paketleme hedefi yok (desteklenen: ${PKG_NODE_TARGETS.join(', ')}) → --node-target <major> ile açıkça seçin`);
@@ -136,9 +236,13 @@ async function buildCommand(opts) {
       throw new PreflightError(`Pre-flight kontrolünde ${findings.errors.length} hata var — build durduruldu`);
     }
     if (opts.check || opts.json) return;
+    // Pre-flight geçtikten sonra, uzun build başlamadan sorulur.
+    if (askFormats) formats = await promptFormats();
 
     // ------------------------------------------------------------ build
-    const appName = sanitizeAppName(opts.name || stack.packageJson.name || path.basename(source.origin).replace(/\.git$/, ''));
+    // Uygulama alt klasördeyse (server/) proje adı kökteki package.json'dan gelir ("defterim-server" değil "defterim")
+    const contextPkgName = stack.appDir !== compose.webService.build.context ? readPackageName(compose.webService.build.context) : null;
+    const appName = sanitizeAppName(opts.name || contextPkgName || stack.packageJson.name || path.basename(source.origin).replace(/\.git$/, ''));
     const appId = toAppId(appName);
     const outRoot = path.resolve(opts.out || 'build-output');
     const outDir = path.join(outRoot, appName);
@@ -205,15 +309,42 @@ async function buildCommand(opts) {
       : 'icon.ico uygulama adının baş harfiyle üretildi (projede favicon.ico yok)');
     fs.renameSync(staging, outDir);
 
+    // Klasör her zaman üretilir (zip ve exe ondan yapılır); seçilmediyse sonda silinir.
     let zipPath = null;
-    if (opts.zip !== false) {
+    if (formats.zip || formats.exe) {
       step('Zip oluşturuluyor');
-      zipPath = `${outDir}.zip`;
+      zipPath = formats.zip ? `${outDir}.zip` : path.join(workspace.dir, `${appName}.zip`);
       await zipDirectory(outDir, zipPath);
     }
+    let exePath = null;
+    if (formats.exe) {
+      // Zip, tek dosya exe'nin payload'ı olarak yeniden kullanılır (tekrar sıkıştırılmaz); kök klasör açılırken soyulur.
+      step('Tek dosya exe oluşturuluyor');
+      exePath = `${outDir}.exe`;
+      await createAppExe({
+        zip: zipPath,
+        strip: `${path.basename(outDir)}/`,
+        output: exePath,
+        appName,
+        appId,
+        icon: path.join(outDir, 'icon.ico'),
+        version: pkg.version,
+        logFile
+      });
+      if (!formats.zip) {
+        fs.rmSync(zipPath, { force: true });
+        zipPath = null;
+      }
+    }
+    const folderSize = formats.folder ? dirSize(outDir) : 0;
+    if (!formats.folder) fs.rmSync(outDir, { recursive: true, force: true });
     if (opts.desktopShortcut) {
-      step('Masaüstü kısayolu oluşturuluyor');
-      createDesktopShortcut(outDir, appName);
+      if (formats.folder || exePath) {
+        step('Masaüstü kısayolu oluşturuluyor');
+        createDesktopShortcut(formats.folder ? path.join(outDir, 'Başlat.bat') : exePath, appName);
+      } else {
+        buildWarnings.push('--desktop-shortcut: sadece zip üretildiği için kısayol oluşturulmadı');
+      }
     }
     spinner.succeed('Build tamamlandı');
 
@@ -227,9 +358,11 @@ async function buildCommand(opts) {
       buildWarnings.forEach(w => console.log(chalk.yellow(`  ⚠ ${w}`)));
     }
     console.log('');
-    console.log(chalk.green.bold('✔ Paket hazır: ') + outDir + chalk.gray(` (${formatBytes(dirSize(outDir))})`));
-    if (zipPath) console.log(chalk.green.bold('✔ Zip:        ') + zipPath + chalk.gray(` (${formatBytes(fs.statSync(zipPath).size)})`));
-    console.log(chalk.gray(`  Başlatmak için: ${path.join(outDir, 'Başlat.bat')}`));
+    if (exePath) console.log(chalk.green.bold('✔ Tek exe: ') + exePath + chalk.gray(` (${formatBytes(fs.statSync(exePath).size)})`));
+    if (formats.folder) console.log(chalk.green.bold('✔ Klasör:  ') + outDir + chalk.gray(` (${formatBytes(folderSize)})`));
+    if (zipPath) console.log(chalk.green.bold('✔ Zip:     ') + zipPath + chalk.gray(` (${formatBytes(fs.statSync(zipPath).size)})`));
+    if (exePath || formats.folder) console.log(chalk.gray(`  Başlatmak için: ${exePath || path.join(outDir, 'Başlat.bat')}`));
+    else console.log(chalk.gray(`  Zip'i açıp içindeki Başlat.bat'ı çalıştırın`));
     const cacheWarning = cacheSizeWarning();
     if (cacheWarning) console.log(chalk.yellow(`\nℹ ${cacheWarning}`));
   } catch (err) {
@@ -251,16 +384,9 @@ async function cleanCacheCommand(opts) {
   console.log(chalk.green(`✔ ${formatBytes(result.freedBytes)} boşaltıldı (${cacheDir()})`));
 }
 
-function run(argv) {
-  const program = new Command();
-  program
-    .name('docker2exe')
-    .description('Docker Compose tabanlı Node.js web uygulamalarını portable Windows paketine dönüştürür')
-    .version(pkg.version);
-
-  program
-    .command('build')
-    .description('Kaynağı çözümle ve paketle')
+function addBuildOptions(cmd) {
+  return cmd
+    .argument('[kaynak]', 'proje klasörü veya GitHub URL\'i (--path/--github yerine)')
     .option('--path <klasör>', 'yerel proje klasörü')
     .option('--github <url>', 'GitHub repo URL\'i')
     .option('--branch <ad>', 'klonlanacak branch (sadece --github)')
@@ -280,11 +406,34 @@ function run(argv) {
     .option('--out <klasör>', 'çıktı klasörü', 'build-output')
     .option('--offline', 'DB binary\'lerini sadece cache\'ten kullan (ağa çıkma)')
     .option('--insecure', 'DB binary indirmelerinde TLS doğrulamasını atla (son çare; SHA256 yine kontrol edilir)')
-    .option('--no-zip', 'zip oluşturma')
+    .option('--format <türler>', 'çıktı türleri: exe, klasor, zip veya hepsi (virgülle, örn. exe,zip); verilmezse build öncesinde sorulur')
+    .option('--no-zip', 'zip oluşturma (sormadan)')
+    .option('--no-exe', 'tek dosya <uygulama>.exe oluşturma (sormadan)')
     .option('--desktop-shortcut', 'masaüstüne Başlat kısayolu oluştur')
     .option('--check', 'sadece pre-flight kontrolü yap, build etme')
-    .option('--json', 'pre-flight sonucunu JSON olarak yaz (build etmez)')
-    .action(buildCommand);
+    .option('--json', 'pre-flight sonucunu JSON olarak yaz (build etmez)');
+}
+
+function run(argv) {
+  const program = new Command();
+  addBuildOptions(program)
+    .name('docker2exe')
+    .usage('<proje-klasörü | github-url> [seçenekler]')
+    .description('Docker Compose tabanlı Node.js web uygulamalarını portable Windows paketine (klasör + zip + tek exe) dönüştürür')
+    .version(pkg.version)
+    .enablePositionalOptions() // alt komuttan sonraki bayraklar alt komuta ait (kök de aynı bayrakları tanımlıyor)
+    .action(async (source, opts) => {
+      if (!source && !opts.path && !opts.github) {
+        if (process.env.D2E_OWN_CONSOLE !== '1' || !process.stdin.isTTY) return program.help();
+        source = await promptSource();
+        if (!source) throw new Error('Proje klasörü verilmedi');
+      }
+      return buildCommand(applySourceArgument(source, opts));
+    });
+
+  addBuildOptions(program.command('build'))
+    .description('Kaynağı çözümle ve paketle (docker2exe <kaynak> ile aynı)')
+    .action((source, opts) => buildCommand(applySourceArgument(source, opts)));
 
   program
     .command('clean-cache')
@@ -304,4 +453,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run };
+module.exports = { run, applySourceArgument, parseFormats, resolveFormats, promptFormats };

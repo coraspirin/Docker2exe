@@ -4,6 +4,7 @@ const { runNpm, installArgs } = require('./npm');
 const { compileWithPkg } = require('./pkgCompiler');
 const { compileRuntimeExe } = require('./runtimeExe');
 const { analyzeNativeModules } = require('./nativeModules');
+const { buildContainerEnv } = require('./containerEnv');
 const { detectFrontendDir, buildSpa, buildSsr, ssrFrameworkOf } = require('./frontendBuilder');
 
 const SQLITE_PACKAGES = ['sqlite3', 'better-sqlite3', 'sqlite', '@libsql/client', 'libsql', 'sql.js'];
@@ -51,7 +52,7 @@ function listFiles(root, { skipDir = () => false, keep = () => true } = {}) {
  * @returns {Promise<{ app: object, frontend: object|null, warnings: string[], infos: string[], native: object[] }>}
  */
 async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, logFile, step = () => {} }) {
-  const appDir = webService.build.context;
+  const appDir = stack.appDir;
   const warnings = [];
   const infos = [];
 
@@ -88,7 +89,7 @@ async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, log
     if (frontendDir.kind === 'spa') {
       step(`Frontend derleniyor (${path.relative(compose.projectDir, frontendDir.dir)})`);
       const sources = backendSourceFiles(appDir, frontendDirs).map(f => path.join(appDir, f));
-      const spa = await buildSpa(frontendDir, appDir, sources, logFile, compose.projectDir);
+      const spa = await buildSpa(frontendDir, appDir, sources, logFile, compose.projectDir, dockerCopyTargets(stack.container, appDir, compose.projectDir));
       warnings.push(...spa.warnings);
       const rel = p => path.relative(compose.projectDir, p);
       infos.push(`Frontend çıktısı: ${rel(spa.output)}${spa.placedAt && spa.placedAt !== spa.output ? ` → ${rel(spa.placedAt)}` : ''}${spa.external ? ' (backend klasörü dışında, monorepo düzeni korunarak paketlendi)' : ''}`);
@@ -136,23 +137,54 @@ async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, log
   if (native.errors.length) {
     throw new Error(`Native modül ABI kontrolü başarısız:\n  ${native.errors.join('\n  ')}`);
   }
+  const pkg = readPkg(appDir) || {};
+  // ES module uygulamalar snapshot'a gömülmez: pkg'nin ESM→CJS dönüşümü import.meta.resolve, dinamik import()
+  // ve worker thread'lerle kırılıyor. app.exe bir yükleyicidir, kod ve node_modules pakette gerçek dosyadır.
+  const esm = pkg.type === 'module' || /\.mjs$/.test(stack.entry.file);
   const nodeModules = path.join(appDir, 'node_modules');
-  const externalRel = native.externalDirs.map(d => toPosix(path.relative(nodeModules, d)));
+  const externalRel = esm ? [] : native.externalDirs.map(d => toPosix(path.relative(nodeModules, d)));
   for (const rel of externalRel) {
     fs.cpSync(path.join(nodeModules, rel), path.join(outDir, 'node_modules', rel), { recursive: true });
   }
-  if (native.packages.length) {
+  if (native.packages.length && !esm) {
     infos.push(`Native modüller snapshot dışında tutuldu (${native.packages.map(p => `${p.name}: ${[...new Set(p.addons.map(a => (a.kind === 'napi' ? 'N-API' : `ABI ${a.abi}`)))].join('/')}`).join(', ')}) → node_modules/ (${externalRel.length} paket)`);
   }
 
   // 4) SQLite
-  const pkg = readPkg(appDir) || {};
   const sqliteDeps = SQLITE_PACKAGES.filter(p => (pkg.dependencies || {})[p]);
   if (sqliteDeps.length) {
     warnings.push(`SQLite tespit edildi (${sqliteDeps.join(', ')}), uygulamanızın DB yolunu process.env.SQLITE_DB_PATH üzerinden okuduğundan emin olun, aksi halde uygulama yazma denemesinde çökecektir`);
   }
-  if (pkg.type === 'module' || /\.mjs$/.test(stack.entry.file)) {
-    warnings.push('Uygulama ES module (type: module); pkg ESM desteği sınırlıdır — paketlenmiş uygulamayı mutlaka test edin');
+
+  if (esm) {
+    step('app.exe hazırlanıyor (ES module yükleyici)');
+    const appCwd = copyAppFiles({ appDir, outDir, projectDir: compose.projectDir, externalAssetDirs, frontendDirs, includeNodeModules: true });
+    const containerEnv = applyContainerEnv(stack, webService, appCwd, outDir, warnings, infos);
+    const loader = await compileRuntimeExe('ssr-loader', nodeMajor, { logFile });
+    fs.copyFileSync(loader, path.join(outDir, 'app.exe'));
+    infos.push(`Uygulama ES module: kod snapshot'a gömülmedi, app.exe ${appCwd}/ klasöründen yükler (import.meta, dinamik import ve worker thread'ler Docker'daki gibi çalışır)`);
+    return {
+      app: {
+        exe: 'app.exe',
+        cwd: appCwd,
+        port: stack.port.value,
+        nodePath: null,
+        sqlite: sqliteDeps.length > 0,
+        healthPath: '/',
+        env: {
+          ...containerEnv,
+          D2E_SSR_DIR: appCwd,
+          D2E_SSR_ENTRY: stack.entry.file,
+          D2E_SSR_ESM: '1',
+          D2E_KEEP_CWD: '1'
+        }
+      },
+      frontend,
+      frontendService,
+      warnings,
+      infos,
+      native: native.packages.map(p => ({ name: p.name, kinds: [...new Set(p.addons.map(a => a.kind))] }))
+    };
   }
 
   // 5) pkg ile app.exe
@@ -192,21 +224,8 @@ async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, log
   // 6) Çalışma klasörü: cwd'ye göreli dosya erişimleri (express.static('public'), fs.readFileSync('config.json')) için
   // Monorepo düzeninde (server/ + client/) göreli yollar korunur: app/<backend>/ + app/<frontend çıktısı>/
   step('Uygulama dosyaları kopyalanıyor');
-  const appRel = externalAssetDirs.length ? toPosix(path.relative(compose.projectDir, appDir)) : '';
-  const appCwd = appRel ? `app/${appRel}` : 'app';
-  for (const dir of externalAssetDirs) {
-    fs.cpSync(dir, path.join(outDir, 'app', path.relative(compose.projectDir, dir)), { recursive: true });
-  }
-  fs.cpSync(appDir, path.join(outDir, appCwd), {
-    recursive: true,
-    filter: src => {
-      const rel = toPosix(path.relative(appDir, src));
-      if (!rel) return true;
-      const top = rel.split('/')[0];
-      if (top === 'node_modules' || top === '.git' || rel === '.d2e-pkg.json') return false;
-      return !isFrontendNodeModules(rel, appDir, frontendDirs);
-    }
-  });
+  const appCwd = copyAppFiles({ appDir, outDir, projectDir: compose.projectDir, externalAssetDirs, frontendDirs, includeNodeModules: false });
+  const containerEnv = applyContainerEnv(stack, webService, appCwd, outDir, warnings, infos);
 
   return {
     app: {
@@ -216,7 +235,7 @@ async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, log
       nodePath: externalRel.length ? 'node_modules' : null,
       sqlite: sqliteDeps.length > 0,
       healthPath: '/',
-      env: webService.resolvedEnvironment
+      env: containerEnv
     },
     frontend,
     frontendService,
@@ -224,6 +243,54 @@ async function buildNodeApp({ compose, webService, stack, outDir, nodeMajor, log
     infos,
     native: native.packages.map(p => ({ name: p.name, kinds: [...new Set(p.addons.map(a => a.kind))] }))
   };
+}
+
+/**
+ * Uygulama klasörünü pakete kopyalar. Monorepo düzeninde (server/ + client/) göreli yollar korunur:
+ * app/<backend>/ + app/<frontend çıktısı>/. Döner: pakete göre çalışma klasörü (app veya app/<backend>).
+ */
+function copyAppFiles({ appDir, outDir, projectDir, externalAssetDirs, frontendDirs, includeNodeModules }) {
+  const appRel = externalAssetDirs.length ? toPosix(path.relative(projectDir, appDir)) : '';
+  const appCwd = appRel ? `app/${appRel}` : 'app';
+  for (const dir of externalAssetDirs) {
+    fs.cpSync(dir, path.join(outDir, 'app', path.relative(projectDir, dir)), { recursive: true });
+  }
+  fs.cpSync(appDir, path.join(outDir, appCwd), {
+    recursive: true,
+    filter: src => {
+      const rel = toPosix(path.relative(appDir, src));
+      if (!rel) return true;
+      const top = rel.split('/')[0];
+      if ((top === 'node_modules' && !includeNodeModules) || top === '.git' || rel === '.d2e-pkg.json') return false;
+      return !isFrontendNodeModules(rel, appDir, frontendDirs);
+    }
+  });
+  return appCwd;
+}
+
+/**
+ * Son stage'de başka bir stage'den kopyalanan klasörlerin (COPY --from=client-build /app/client/dist /app/client/dist)
+ * proje içindeki karşılıkları. WORKDIR /app/server ↔ <proje>/server ise /app ↔ <proje>.
+ */
+function dockerCopyTargets(container, appDir, projectDir) {
+  if (!container || !container.copies) return [];
+  const sub = toPosix(path.relative(projectDir, appDir)).split('/').filter(Boolean);
+  const wd = container.workdir.split('/').filter(Boolean);
+  const matches = wd.length >= sub.length && wd.slice(wd.length - sub.length).join('/') === sub.join('/');
+  if (!matches) return [];
+  const root = '/' + wd.slice(0, wd.length - sub.length).join('/');
+  const base = root === '/' ? '' : root;
+  return container.copies
+    .filter(c => c.from && (c.dest === base || c.dest.startsWith(`${base}/`)))
+    .map(c => ({ dir: path.join(projectDir, ...c.dest.slice(base.length).split('/').filter(Boolean)), file: 'Dockerfile' }))
+    .filter(t => path.resolve(t.dir) !== path.resolve(projectDir) && path.resolve(t.dir) !== path.resolve(appDir));
+}
+
+function applyContainerEnv(stack, webService, appCwd, outDir, warnings, infos) {
+  const result = buildContainerEnv(stack.container, webService, appCwd, outDir);
+  warnings.push(...result.warnings);
+  if (result.infos.length) infos.push(`Container yolları eşlendi: ${result.infos.join('; ')}`);
+  return result.env;
 }
 
 /** detectFrontendDir sonucunu verilen aday klasör listesinden yeniden kurar. */

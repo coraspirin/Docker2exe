@@ -206,3 +206,39 @@ test('framework tespiti', () => {
     assert.deepEqual(s.framework, { ssr: null, server: 'express' });
   });
 });
+
+// --- uygulama klasörü (Dockerfile COPY) ---
+
+test('uygulama klasörü: kök context + COPY server/ → server/', () => {
+  withStack(
+    {
+      'package.json': pkg({ name: 'root', type: 'module', devDependencies: { concurrently: '^9' } }),
+      'server/package.json': pkg({ name: 'srv', scripts: { start: 'node src/index.js' }, dependencies: { express: '^4' } }),
+      'server/src/index.js': '',
+      Dockerfile: 'FROM node:26-alpine\nWORKDIR /app/server\nRUN apk add --no-cache poppler-utils\nCOPY server/package*.json ./\nCOPY server/ ./\nCMD ["node", "src/index.js"]\n'
+    },
+    (s, dir) => {
+      assert.equal(s.appDir, path.join(dir, 'server'));
+      assert.equal(s.packageJson.name, 'srv');
+      assert.equal(s.entry.file, 'src/index.js');
+      assert.equal(s.node.major, 26);
+      assert.equal(s.container.workdir, '/app/server');
+      assert.deepEqual(s.errors, []);
+      assert.ok(s.warnings.some(w => w.includes('poppler-utils')));
+    },
+    { overrides: { port: 4000 } }
+  );
+});
+
+test('uygulama klasörü: COPY . . → context kökü', () => {
+  withStack(
+    {
+      'package.json': pkg({ scripts: { start: 'node server.js' } }),
+      'server.js': '',
+      'server/package.json': pkg({ name: 'baska' }),
+      Dockerfile: 'FROM node:22\nWORKDIR /app\nCOPY package*.json ./\nCOPY . .\n'
+    },
+    (s, dir) => assert.equal(s.appDir, dir),
+    { overrides: { port: 3000 } }
+  );
+});

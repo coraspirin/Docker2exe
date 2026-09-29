@@ -15,6 +15,17 @@ function npmCliPath() {
 }
 
 /**
+ * Çalışan Node'un klasörü PATH'in başına eklenmiş ortam: npm script'leri (`node install.js`, `npm run build`)
+ * PATH'teki node'u çağırır; docker2exe.exe kendi gömülü Node'uyla, PATH'te Node olmayan makinede de çalışır.
+ */
+function envWithOwnNode(base = process.env) {
+  const env = { ...base };
+  const key = Object.keys(env).find(k => k.toUpperCase() === 'PATH') || 'PATH';
+  env[key] = [path.dirname(process.execPath), env[key]].filter(Boolean).join(path.delimiter);
+  return env;
+}
+
+/**
  * @returns {Promise<string>} birleşik çıktı
  */
 function runNpm(args, { cwd, logFile, env } = {}) {
@@ -23,7 +34,7 @@ function runNpm(args, { cwd, logFile, env } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, fullArgs, {
       cwd,
-      env: { ...process.env, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false', ...env },
+      env: { ...envWithOwnNode(), npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false', ...env },
       shell,
       windowsHide: true
     });
@@ -48,4 +59,4 @@ function installArgs(dir, { production }) {
   return args;
 }
 
-module.exports = { runNpm, installArgs, npmCliPath };
+module.exports = { runNpm, installArgs, npmCliPath, envWithOwnNode };

@@ -240,6 +240,25 @@ class Launcher {
     return moves;
   }
 
+  /**
+   * Build sırasında container yollarından üretilen yer tutucular (src/builder/containerEnv.js):
+   * ${D2E_DATA_DIR} → kalıcı veri klasörü (volume karşılığı), ${D2E_INSTALL_DIR} → paket klasörü.
+   * Volume kökleri Docker'daki gibi önceden oluşturulur.
+   */
+  expandPlaceholders(env) {
+    const out = {};
+    for (const [k, v] of Object.entries(env)) {
+      if (typeof v !== 'string' || !v.includes('${D2E_')) {
+        out[k] = v;
+        continue;
+      }
+      const volume = /^\$\{D2E_DATA_DIR\}\/volumes\/([^/]+)/.exec(v);
+      if (volume) fs.mkdirSync(path.join(this.p.dataDir, 'volumes', volume[1]), { recursive: true });
+      out[k] = path.normalize(v.replace(/\$\{D2E_DATA_DIR\}/g, this.p.dataDir).replace(/\$\{D2E_INSTALL_DIR\}/g, this.p.installDir));
+    }
+    return out;
+  }
+
   async startNodeProcess(role, spec, moves, extraEnv = {}) {
     const userEnv = readUserEnv(this.p.installDir);
     const { env: rewritten, notes } = rewriteEnvPorts({ ...spec.env, ...userEnv }, this.cfg.envRefs[role] || [], moves);
@@ -251,7 +270,7 @@ class Launcher {
       this.log.warn(`Port ${spec.port} kullanımda olduğu için ${role} ${port} portunda başlatılıyor (PORT ortam değişkeni ile)`);
     }
 
-    const appEnv = { ...rewritten, ...extraEnv, PORT: String(port) };
+    const appEnv = this.expandPlaceholders({ ...rewritten, ...extraEnv, PORT: String(port) });
     if (spec.nodePath) appEnv.NODE_PATH = path.join(this.p.installDir, spec.nodePath);
     if (spec.sqlite && !appEnv.SQLITE_DB_PATH) {
       const sqliteDir = path.join(this.p.dataDir, 'sqlite');
@@ -332,6 +351,9 @@ Ayrıntılar: ${logFile}`;
         const cmd = String(d).trim();
         if (cmd === 'url') {
           socket.end(this.url || '');
+        } else if (cmd === 'status') {
+          // Tek dosya exe'nin durum penceresi için: "<durum>\t<url>"
+          socket.end(`${this.state || ''}\t${this.url || ''}`);
         } else if (cmd === 'stop') {
           this.log.info('Durdurma isteği alındı');
           await this.shutdown(0, { exit: false });

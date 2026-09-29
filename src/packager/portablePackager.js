@@ -132,13 +132,14 @@ function writePackage({ outDir, appName, appId, compose, webService, nodeApp, pr
   fs.mkdirSync(path.join(outDir, 'config'), { recursive: true });
   fs.writeFileSync(path.join(outDir, 'config', 'app.json'), JSON.stringify(config, null, 2));
 
-  const envLines = Object.entries(nodeApp.app.env).map(([k, v]) => `# ${k}=${v}`);
+  const envLines = Object.entries(nodeApp.app.env).filter(([k]) => !k.startsWith('D2E_')).map(([k, v]) => `# ${k}=${v}`);
   fs.writeFileSync(
     path.join(outDir, 'config', '.env.template'),
     [
       '# Bu dosyayı config\\.env olarak kopyalayın ve değiştirmek istediğiniz satırların başındaki # işaretini kaldırın.',
       '# config\\.env içindeki değerler build sırasında gömülen değerlerin üzerine yazılır.',
       '# Not: Veritabanı bağlantı adresleri launcher tarafından otomatik yönetilir (port çakışmasında güncellenir).',
+      '# ${D2E_DATA_DIR}: kalıcı veri klasörü (%LOCALAPPDATA%\\<uygulama>\\data), ${D2E_INSTALL_DIR}: bu paketin klasörü.',
       '',
       ...envLines,
       ''
@@ -183,15 +184,16 @@ function zipDirectory(dir, zipPath) {
   });
 }
 
-/** Masaüstüne Başlat.bat kısayolu (WScript.Shell). */
-function createDesktopShortcut(outDir, appName) {
-  const target = path.join(outDir, 'Başlat.bat');
+/** Masaüstüne kısayol (WScript.Shell). target: paket klasöründeki Başlat.bat veya tek dosya exe. */
+function createDesktopShortcut(target, appName) {
+  const dir = path.dirname(target);
+  const icon = /\.exe$/i.test(target) ? target : path.join(dir, 'icon.ico');
   const script = [
     '$ws = New-Object -ComObject WScript.Shell',
     `$lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) '${appName.replace(/'/g, "''")}.lnk'))`,
     `$lnk.TargetPath = '${target.replace(/'/g, "''")}'`,
-    `$lnk.WorkingDirectory = '${outDir.replace(/'/g, "''")}'`,
-    `$lnk.IconLocation = '${path.join(outDir, 'icon.ico').replace(/'/g, "''")},0'`,
+    `$lnk.WorkingDirectory = '${dir.replace(/'/g, "''")}'`,
+    `$lnk.IconLocation = '${icon.replace(/'/g, "''")},0'`,
     '$lnk.Save()'
   ].join('; ');
   const res = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { encoding: 'utf8', windowsHide: true });

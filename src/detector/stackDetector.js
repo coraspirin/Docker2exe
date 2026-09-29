@@ -25,12 +25,15 @@ function detectStack(webService, overrides = {}) {
   const errors = [];
   const warnings = [];
   const infos = [];
-  const appDir = webService.build.context;
+  const dockerfile = safeDockerfile(webService, warnings);
+  const appDir = resolveAppDir(webService.build.context, dockerfile);
+  if (appDir !== webService.build.context) {
+    infos.push(`Uygulama klasörü: ${displayPath(overrides.rootDir, appDir) || '.'} (Dockerfile WORKDIR ${dockerfile.final.workdir} bu klasörden kopyalanıyor)`);
+  }
 
   const pkgPath = path.join(appDir, 'package.json');
   if (!fs.existsSync(pkgPath)) {
-    const base = safeDockerfile(webService, warnings);
-    const hint = base && base.final ? ` (Dockerfile base image: ${base.final.rootImage})` : '';
+    const hint = dockerfile && dockerfile.final ? ` (Dockerfile base image: ${dockerfile.final.rootImage})` : '';
     errors.push(`"${webService.name}" servisi bir Node.js projesi değil: ${displayPath(overrides.rootDir, pkgPath)} bulunamadı${hint}`);
     return { appDir, packageJson: null, entry: null, port: null, node: null, framework: null, errors, warnings, infos };
   }
@@ -43,7 +46,6 @@ function detectStack(webService, overrides = {}) {
     return { appDir, packageJson: null, entry: null, port: null, node: null, framework: null, errors, warnings, infos };
   }
 
-  const dockerfile = safeDockerfile(webService, warnings);
   const framework = detectFramework(pkg);
   const entry = detectEntry({ appDir, pkg, dockerfile, override: overrides.entry, errors, warnings, infos });
   const port = detectPort({ webService, dockerfile, appDir, entry, override: overrides.port, errors, warnings });
@@ -53,8 +55,13 @@ function detectStack(webService, overrides = {}) {
     warnings.push(`${framework.ssr} bağımlılığı var ama başlatma komutu SSR sunucusu değil — frontend build aşamasında ayrıca ele alınacak`);
   }
 
+  const final = dockerfile && dockerfile.final;
+  if (final && final.systemPackages && final.systemPackages.length) {
+    warnings.push(`Dockerfile işletim sistemi paketleri kuruyor (${final.systemPackages.join(', ')}); bunlar Windows paketine dahil edilmez — bu paketlerin sağladığı komutları (örn. child_process ile çağrılan araçlar) kullanan özellikler hedef makinede kurulu değilse çalışmaz`);
+  }
   return {
     appDir,
+    container: final ? { workdir: final.workdir, env: final.env, volumes: final.volumes, copies: final.copies } : null,
     packageJson: { name: pkg.name || null, version: pkg.version || null },
     entry,
     port,
@@ -75,6 +82,34 @@ function safeDockerfile(webService, warnings) {
     warnings.push(`Dockerfile okunamadı: ${err.message}`);
   }
   return null;
+}
+
+/**
+ * Uygulamanın build context içindeki klasörü. Docker'da çalışan kod, son stage'de WORKDIR'a kopyalanan klasördür:
+ * `COPY . .` → context kökü; `COPY server/package*.json ./` + `COPY server/ ./` (WORKDIR /app/server) → server/.
+ * Kopyalanan klasörde package.json yoksa context kökü kullanılır.
+ */
+function resolveAppDir(context, dockerfile) {
+  const final = dockerfile && dockerfile.final;
+  if (!final || !final.copies) return context;
+  for (const copy of final.copies) {
+    if (copy.from || copy.dest !== final.workdir) continue;
+    for (const src of copy.sources) {
+      let dir = null;
+      if (/(^|\/)package[^/]*\.json$/.test(src)) {
+        dir = path.posix.dirname(src);
+      } else if (!/[*?[]/.test(src)) {
+        const full = path.resolve(context, src);
+        if (fs.existsSync(full) && fs.statSync(full).isDirectory()) dir = src;
+      }
+      if (dir === null) continue;
+      const candidate = path.resolve(context, dir);
+      if (isInside(context, candidate) && fs.existsSync(path.join(candidate, 'package.json'))) {
+        return candidate === path.resolve(context) ? context : candidate;
+      }
+    }
+  }
+  return context;
 }
 
 // --- Entry point ---
